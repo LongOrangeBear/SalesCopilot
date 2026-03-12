@@ -103,6 +103,17 @@
 
 Дашборд будет доступен по адресу: `http://localhost:5173`
 
+### 4.3. Порты (Development vs Production)
+
+| Сервис | Локально (dev) | Production (VPS) |
+|---|---|---|
+| Backend (uvicorn) | 8000 | 8211 |
+| Dashboard (Vite / nginx) | 5173 | 3211 |
+| Asterisk SIP | - | 5060 |
+| Asterisk ARI | - | 8088 |
+
+> **Примечание:** На продакшене используются нестандартные порты (8211, 3211), чтобы не конфликтовать с другими сервисами на VPS. Порт задаётся в systemd unit (`/etc/systemd/system/salescopilot-backend.service`) и в production `.env` (`PORT=8211`). Nginx слушает на порту 3211 и проксирует `/api/` и `/ws/` на backend (8211).
+
 ---
 
 ## 5. Перезапуск компонентов

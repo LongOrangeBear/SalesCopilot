@@ -242,6 +242,8 @@ ufw allow 443/tcp comment 'HTTPS'
 ufw allow 5060/udp comment 'SIP UDP'
 ufw allow 5060/tcp comment 'SIP TCP'
 ufw allow 10000:20000/udp comment 'RTP media'
+ufw allow 3211/tcp comment 'SalesCopilot Dashboard'
+ufw allow 8211/tcp comment 'SalesCopilot Backend'
 
 # Включить
 echo 'y' | ufw enable
@@ -440,6 +442,8 @@ ufw allow 443/tcp
 ufw allow 5060/udp
 ufw allow 5060/tcp
 ufw allow 10000:20000/udp
+ufw allow 3211/tcp comment 'SalesCopilot Dashboard'
+ufw allow 8211/tcp comment 'SalesCopilot Backend'
 echo 'y' | ufw enable
 
 systemctl restart asterisk
