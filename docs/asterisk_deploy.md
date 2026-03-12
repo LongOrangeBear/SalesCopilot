@@ -52,6 +52,8 @@ asterisk -rx 'module unload chan_sip.so'
 
 ```ini
 ; === SalesCopilot Asterisk PJSIP Config ===
+; Эндпоинты именуются по номеру расширения (100, 200, ...)
+; Новый аккаунт = скопировать блок endpoint/auth/aor и поменять номер
 
 ; UDP Transport
 [transport-udp]
@@ -76,51 +78,53 @@ local_net=172.16.0.0/12
 local_net=192.168.0.0/16
 
 ; === Аккаунт: Manager (ext 100) ===
-[manager]
+[100]
 type=endpoint
 context=internal
 disallow=all
 allow=ulaw
 allow=alaw
-auth=manager-auth
-aors=manager
+auth=100-auth
+aors=100
 direct_media=no                           ; Звук ВСЕГДА через Asterisk (для перехвата)
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+callerid="Manager" <100>
 
-[manager-auth]
+[100-auth]
 type=auth
 auth_type=userpass
 username=manager
 password=MANAGER_PASSWORD                 ; <-- заменить на надёжный пароль
 
-[manager]
+[100]
 type=aor
 max_contacts=5
 remove_existing=yes
 
 ; === Аккаунт: Client (ext 200) ===
-[client]
+[200]
 type=endpoint
 context=internal
 disallow=all
 allow=ulaw
 allow=alaw
-auth=client-auth
-aors=client
+auth=200-auth
+aors=200
 direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+callerid="Client" <200>
 
-[client-auth]
+[200-auth]
 type=auth
 auth_type=userpass
 username=client
 password=CLIENT_PASSWORD                  ; <-- заменить на надёжный пароль
 
-[client]
+[200]
 type=aor
 max_contacts=5
 remove_existing=yes
@@ -144,24 +148,19 @@ remove_existing=yes
 
 ```ini
 ; === SalesCopilot Dialplan ===
+; Универсальный шаблон _X. -- маршрутизирует любой набранный номер
+; Новый эндпоинт в pjsip.conf автоматически становится вызываемым
 
 [general]
 static=yes
 writeprotect=no
 
 [internal]
-; Manager: ext 100
-exten => 100,1,NoOp(Incoming call to Manager)
- same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-100)
+; Универсальный обработчик: любой набранный номер
+exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+ same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
  same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
- same => n,Dial(PJSIP/manager,30,t)
- same => n,Hangup()
-
-; Client: ext 200
-exten => 200,1,NoOp(Incoming call to Client)
- same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-200)
- same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
- same => n,Dial(PJSIP/client,30,t)
+ same => n,Dial(PJSIP/${EXTEN},30,t)
  same => n,Hangup()
 
 ; Echo test: ext 600 (говоришь -- слышишь себя)
@@ -169,9 +168,18 @@ exten => 600,1,NoOp(Echo Test)
  same => n,Answer()
  same => n,Echo()
  same => n,Hangup()
+
+; -- Для подключения SIP-транка (Манго и т.д.) добавить:
+; [from-trunk]
+; exten => _X.,1,NoOp(Incoming from trunk: ${CALLERID(num)})
+;  same => n,MixMonitor(...)
+;  same => n,Dial(PJSIP/100,30,t)
+;  same => n,Hangup()
 ```
 
 **MixMonitor** -- записывает звонок в WAV. Параметр `r` записывает поток в формате, совместимом с дальнейшей обработкой. Записи хранятся в `/var/spool/asterisk/monitor/`.
+
+**Универсальный шаблон `_X.`** -- матчит любой набранный номер из одной и более цифр. `${EXTEN}` автоматически подставляется как имя PJSIP-эндпоинта. Добавление нового менеджера = только `pjsip.conf`, dialplan трогать не нужно.
 
 ---
 
@@ -282,7 +290,10 @@ asterisk -rvvv
 | Domain | IP-адрес сервера |
 | Username | manager (или client) |
 | Password | пароль из pjsip.conf |
+| Auth name | manager (или client) |
 | Transport | UDP (или TCP если за VPN) |
+
+> **ВАЖНО:** Username/Auth name остаются текстовыми (`manager`, `client`), хотя эндпоинты в PJSIP называются числовыми (`100`, `200`). Аутентификация происходит по username из `[100-auth]`.
 
 **Отключить STUN** в настройках Zoiper (Advanced -> STUN) -- наш Asterisk сам решает NAT через `rtp_symmetric` и `force_rport`.
 
@@ -342,50 +353,52 @@ local_net=10.0.0.0/8
 local_net=172.16.0.0/12
 local_net=192.168.0.0/16
 
-[manager]
+[100]
 type=endpoint
 context=internal
 disallow=all
 allow=ulaw
 allow=alaw
-auth=manager-auth
-aors=manager
+auth=100-auth
+aors=100
 direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+callerid="Manager" <100>
 
-[manager-auth]
+[100-auth]
 type=auth
 auth_type=userpass
 username=manager
 password=${MANAGER_PASS}
 
-[manager]
+[100]
 type=aor
 max_contacts=5
 remove_existing=yes
 
-[client]
+[200]
 type=endpoint
 context=internal
 disallow=all
 allow=ulaw
 allow=alaw
-auth=client-auth
-aors=client
+auth=200-auth
+aors=200
 direct_media=no
 rtp_symmetric=yes
 force_rport=yes
 rewrite_contact=yes
+callerid="Client" <200>
 
-[client-auth]
+[200-auth]
 type=auth
 auth_type=userpass
 username=client
 password=${CLIENT_PASS}
 
-[client]
+[200]
 type=aor
 max_contacts=5
 remove_existing=yes
@@ -398,16 +411,10 @@ static=yes
 writeprotect=no
 
 [internal]
-exten => 100,1,NoOp(Call to Manager)
- same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-100)
+exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+ same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
  same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
- same => n,Dial(PJSIP/manager,30,t)
- same => n,Hangup()
-
-exten => 200,1,NoOp(Call to Client)
- same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-200)
- same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
- same => n,Dial(PJSIP/client,30,t)
+ same => n,Dial(PJSIP/${EXTEN},30,t)
  same => n,Hangup()
 
 exten => 600,1,Answer()

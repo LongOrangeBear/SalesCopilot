@@ -75,9 +75,10 @@ def create_app() -> FastAPI:
     )
 
     # Подключение роутеров
-    from app.routes import health_router, calls_router, ws_router
+    from app.routes import health_router, calls_router, ws_router, settings_router
     application.include_router(health_router)
     application.include_router(calls_router)
     application.include_router(ws_router)
+    application.include_router(settings_router)
 
     return application

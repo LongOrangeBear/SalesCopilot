@@ -12,6 +12,7 @@ import {
   WifiOff,
   Clock,
   ClipboardCheck,
+  Settings,
   Zap,
 } from "lucide-react";
 import { cn } from "@/shared/lib";
@@ -19,16 +20,18 @@ import { useWebSocket } from "@/shared/api";
 import { VersionBadge } from "@/shared/ui";
 import { MonitorPage } from "@/pages/monitor";
 import { ChecklistPage } from "@/pages/checklist";
+import { SettingsPage } from "@/pages/settings";
 import "./index.css";
 
 // --- Табы навигации ---
 
-type TabId = "monitor" | "archive" | "checklist";
+type TabId = "monitor" | "archive" | "checklist" | "settings";
 
 const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
   { id: "monitor", label: "Монитор", icon: <Activity className="w-4 h-4" /> },
   { id: "archive", label: "Архив", icon: <Clock className="w-4 h-4" /> },
   { id: "checklist", label: "Чеклист", icon: <ClipboardCheck className="w-4 h-4" /> },
+  { id: "settings", label: "Настройки", icon: <Settings className="w-4 h-4" /> },
 ];
 
 // --- App ---
@@ -91,7 +94,9 @@ function App() {
       </header>
 
       {/* Content */}
-      {activeTab === "checklist" ? (
+      {activeTab === "settings" ? (
+        <SettingsPage />
+      ) : activeTab === "checklist" ? (
         <ChecklistPage />
       ) : (
         <MonitorPage
