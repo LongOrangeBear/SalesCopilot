@@ -61,7 +61,7 @@ ASTERISK_ARI_PASSWORD=
 
 # Server
 HOST=0.0.0.0
-PORT=8000
+PORT=8211
 DEBUG=false
 
 # Dashboard URL (production)
@@ -89,7 +89,7 @@ Type=simple
 User=root
 WorkingDirectory=/opt/salescopilot/backend
 Environment=PATH=/opt/salescopilot/backend/venv/bin:/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/salescopilot/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+ExecStart=/opt/salescopilot/backend/venv/bin/uvicorn main:app --host 0.0.0.0 --port 8211
 Restart=always
 RestartSec=5
 
@@ -107,7 +107,7 @@ systemctl start salescopilot-backend
 ```bash
 cat > /etc/nginx/sites-available/salescopilot << 'EOF'
 server {
-    listen 80;
+    listen 3211;
     server_name _;
 
     # Dashboard - serve built static files
@@ -120,7 +120,7 @@ server {
 
     # Backend API proxy
     location /api/ {
-        proxy_pass http://127.0.0.1:8000/api/;
+        proxy_pass http://127.0.0.1:8211/api/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -132,7 +132,7 @@ server {
 
     # WebSocket proxy
     location /ws/ {
-        proxy_pass http://127.0.0.1:8000/ws/;
+        proxy_pass http://127.0.0.1:8211/ws/;
         proxy_http_version 1.1;
         proxy_set_header Upgrade $http_upgrade;
         proxy_set_header Connection "upgrade";
@@ -142,7 +142,7 @@ server {
 
     # Health check
     location /health {
-        proxy_pass http://127.0.0.1:8000/health;
+        proxy_pass http://127.0.0.1:8211/health;
     }
 }
 EOF
@@ -235,7 +235,7 @@ cat /root/.ssh/deploy_key.pub >> /root/.ssh/authorized_keys
 
 ```bash
 # Backend работает
-curl http://localhost:8000/health
+curl http://localhost:8211/health
 
 # Dashboard доступен
 curl -I http://localhost
@@ -252,8 +252,8 @@ cat /opt/salescopilot/dashboard/dist/version.json
 
 ```bash
 ufw allow ssh
-ufw allow 80/tcp
-ufw allow 443/tcp
+ufw allow 3211/tcp
+ufw allow 8211/tcp
 ufw allow 5060/udp   # SIP (Asterisk)
 ufw allow 8088/tcp   # Asterisk ARI
 ufw allow 10000:20000/udp  # RTP (Asterisk)
