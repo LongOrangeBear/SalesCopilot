@@ -16,3 +16,22 @@ jobs:
           key: ${{ secrets.VPS_SSH_KEY }}
           port: ${{ secrets.VPS_PORT }}
           script: /opt/salescopilot/deploy.sh
+          command_timeout: 5m
+
+      - name: Verify deployment
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+          script: |
+            echo "=== Service status ==="
+            systemctl is-active salescopilot-backend || (echo "FAIL: backend not running" && exit 1)
+            systemctl is-active nginx || (echo "FAIL: nginx not running" && exit 1)
+            echo "=== Health check ==="
+            curl -sf http://127.0.0.1:8211/api/health || (echo "FAIL: health check failed" && exit 1)
+            echo "=== Version ==="
+            cat /opt/salescopilot/dashboard/dist/version.json
+            echo ""
+            echo "=== All checks passed ==="
