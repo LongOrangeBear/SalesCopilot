@@ -3,6 +3,7 @@
 from app.models.call_session import SessionManager, session_manager
 from app.services.stt import SpeechKitSTTClient, stt_client
 from app.services.llm import LLMService, llm_service
+from app.services.ami import AsteriskAMIClient, ami_client
 from app.core.ws_manager import DashboardConnectionManager, ws_manager
 
 
@@ -24,3 +25,8 @@ def get_llm_service() -> LLMService:
 def get_ws_manager() -> DashboardConnectionManager:
     """DI: менеджер WebSocket-соединений."""
     return ws_manager
+
+
+def get_ami_client() -> AsteriskAMIClient:
+    """DI: клиент Asterisk AMI."""
+    return ami_client

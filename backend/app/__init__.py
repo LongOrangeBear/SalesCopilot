@@ -23,9 +23,15 @@ async def lifespan(app: FastAPI):
     create_demo_session()
     logger.info("Демо-сессия создана")
 
+    # Запускаем AMI-клиент для отслеживания реальных звонков
+    from app.services.ami import ami_client
+    await ami_client.start()
+
     yield
 
     # Shutdown
+    await ami_client.stop()
+
     from app.services.stt import stt_client
     from app.services.llm import llm_service
     await stt_client.close()

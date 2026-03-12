@@ -20,6 +20,9 @@ class Settings(BaseSettings):
     asterisk_ari_port: int = Field(default=8088, description="Asterisk ARI port")
     asterisk_ari_user: str = Field(default="admin", description="Asterisk ARI username")
     asterisk_ari_password: str = Field(default="", description="Asterisk ARI password")
+    asterisk_ami_port: int = Field(default=5038, description="Asterisk AMI port")
+    asterisk_ami_user: str = Field(default="salespilot", description="Asterisk AMI username")
+    asterisk_ami_password: str = Field(default="", description="Asterisk AMI password")
 
     # Server
     host: str = Field(default="0.0.0.0")

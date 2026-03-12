@@ -5,11 +5,15 @@ import os
 from fastapi import APIRouter, Depends
 
 from config import settings
-from app.core.dependencies import get_session_manager, get_ws_manager, get_stt_client, get_llm_service
+from app.core.dependencies import (
+    get_session_manager, get_ws_manager, get_stt_client,
+    get_llm_service, get_ami_client,
+)
 from app.core.ws_manager import DashboardConnectionManager
 from app.models.call_session import SessionManager
 from app.services.stt import SpeechKitSTTClient
 from app.services.llm import LLMService
+from app.services.ami import AsteriskAMIClient
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -20,6 +24,7 @@ async def health(
     wm: DashboardConnectionManager = Depends(get_ws_manager),
     stt: SpeechKitSTTClient = Depends(get_stt_client),
     llm: LLMService = Depends(get_llm_service),
+    ami: AsteriskAMIClient = Depends(get_ami_client),
 ):
     """Статус всех сервисов."""
     stt_status = await stt.check_connection()
@@ -31,8 +36,8 @@ async def health(
             "stt": stt_status,
             "llm": llm_status,
             "asterisk": {
-                "available": False,
-                "message": "Asterisk: SIP-транк не настроен (ожидание Mango)",
+                "available": ami.is_connected,
+                "message": "AMI подключён" if ami.is_connected else "AMI не подключён",
             },
             "crm": {
                 "available": False,
