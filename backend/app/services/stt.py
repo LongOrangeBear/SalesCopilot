@@ -212,17 +212,29 @@ class SpeechKitSTTClient:
             # Аналитика по диалогу -- логируем
             logger.debug("STT conversation_analysis: %s", response.conversation_analysis)
 
-    async def check_connection(self) -> bool:
-        """Проверка доступности gRPC-канала."""
+    async def check_connection(self) -> dict:
+        """Проверка доступности gRPC-канала.
+
+        Returns:
+            dict с ключами 'available' (bool) и 'message' (str).
+        """
         try:
             await self._ensure_channel()
             # Пробуем создать канал и проверить connectivity
             state = self._channel.get_state(try_to_connect=True)
             logger.info("STT: gRPC state = %s", state)
-            return True
+            # grpc.ChannelConnectivity: IDLE, CONNECTING, READY, TRANSIENT_FAILURE, SHUTDOWN
+            state_name = state.name if hasattr(state, "name") else str(state)
+            if state in (grpc.ChannelConnectivity.READY, grpc.ChannelConnectivity.IDLE):
+                return {"available": True, "message": f"SpeechKit: OK (state={state_name})"}
+            else:
+                return {
+                    "available": False,
+                    "message": f"SpeechKit: недоступен (state={state_name})",
+                }
         except Exception as e:
             logger.error("STT: check_connection failed: %s", e)
-            return False
+            return {"available": False, "message": f"SpeechKit: {str(e)}"}
 
     async def close(self) -> None:
         """Закрытие gRPC-канала."""

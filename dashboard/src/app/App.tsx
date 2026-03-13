@@ -37,7 +37,7 @@ const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
 // --- App ---
 
 function App() {
-  const { connected, activeCalls, archivedCalls } = useWebSocket();
+  const { connected, activeCalls, archivedCalls, pipelineLogs, clearLogs } = useWebSocket();
   const [activeTab, setActiveTab] = useState<TabId>("monitor");
   const [selectedCallId, setSelectedCallId] = useState<string | null>(null);
 
@@ -103,6 +103,8 @@ function App() {
           calls={activeTab === "monitor" ? activeCalls : archivedCalls}
           selectedCallId={selectedCallId}
           onSelectCall={setSelectedCallId}
+          pipelineLogs={pipelineLogs}
+          onClearLogs={clearLogs}
         />
       )}
     </div>

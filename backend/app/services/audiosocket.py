@@ -34,6 +34,9 @@ FRAME_TYPE_ERROR = 0x02
 AUDIOSOCKET_PORT = getattr(settings, "audiosocket_port", 9092)
 CHUNK_DURATION_MS = 400  # Отправлять в STT каждые ~400мс
 
+# Логировать статистику аудио каждые N чанков
+LOG_AUDIO_EVERY_N_CHUNKS = 25
+
 
 class AudioSocketSession:
     """Сессия одного AudioSocket-соединения."""
@@ -44,9 +47,13 @@ class AudioSocketSession:
         self.audio_buffer = bytearray()
         self.started_at = time.time()
         self._audio_queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self.chunk_count: int = 0
+        self.total_bytes: int = 0
 
     async def feed_audio(self, data: bytes) -> None:
         """Добавить аудио-данные в очередь для STT."""
+        self.chunk_count += 1
+        self.total_bytes += len(data)
         await self._audio_queue.put(data)
 
     async def audio_generator(self):
@@ -74,12 +81,26 @@ class AudioSocketServer:
         self._sessions: Dict[str, AudioSocketSession] = {}
         self._stt_tasks: Dict[str, asyncio.Task] = {}
 
+    async def _emit_log(
+        self, message: str, details: str | None = None, level: str = "info"
+    ) -> None:
+        """Отправить pipeline log через ws_manager."""
+        try:
+            from app.core.ws_manager import ws_manager
+            await ws_manager.broadcast_log("AudioSocket", message, details, level)
+        except Exception:
+            pass  # Не ломаем pipeline из-за логирования
+
     async def start(self, host: str = "0.0.0.0", port: int = AUDIOSOCKET_PORT) -> None:
         """Запуск TCP-сервера."""
         self._server = await asyncio.start_server(
             self._handle_connection, host, port
         )
         logger.info("AudioSocket: cервер запущен на %s:%d", host, port)
+        await self._emit_log(
+            f"Сервер запущен на {host}:{port}",
+            f"Ожидание AudioSocket-соединений от Asterisk",
+        )
 
     async def stop(self) -> None:
         """Остановка сервера."""
@@ -105,6 +126,10 @@ class AudioSocketServer:
         """Обработка одного AudioSocket-соединения."""
         addr = writer.get_extra_info("peername")
         logger.info("AudioSocket: новое соединение от %s", addr)
+        await self._emit_log(
+            f"Новое соединение от {addr}",
+            "Ожидание UUID звонка...",
+        )
 
         call_id: Optional[str] = None
         session: Optional[AudioSocketSession] = None
@@ -134,6 +159,11 @@ class AudioSocketServer:
                     self._sessions[session_key] = session
                     logger.info("AudioSocket: сессия %s speaker=%s", call_id[:8], speaker)
 
+                    await self._emit_log(
+                        f"UUID получен: {call_id[:8]}... speaker={speaker}",
+                        f"Полный UUID: {call_id} | Адрес: {addr}",
+                    )
+
                     # Запускаем STT для этого потока
                     stt_task = asyncio.create_task(
                         self._run_stt(session)
@@ -144,18 +174,47 @@ class AudioSocketServer:
                     # Аудио-данные
                     await session.feed_audio(payload)
 
+                    # Периодическое логирование статистики аудио-чанков
+                    if session.chunk_count % LOG_AUDIO_EVERY_N_CHUNKS == 0:
+                        elapsed = time.time() - session.started_at
+                        kb = session.total_bytes / 1024
+                        await self._emit_log(
+                            f"Аудио [{session.speaker}]: {session.chunk_count} чанков, {kb:.1f} KB",
+                            f"call_id={session.call_id[:8]}... | Время: {elapsed:.0f}с | Размер чанка: {len(payload)} байт",
+                        )
+
                 elif frame_type == FRAME_TYPE_HANGUP:
                     logger.info("AudioSocket: hangup для %s", call_id)
+                    elapsed = time.time() - session.started_at if session else 0
+                    await self._emit_log(
+                        f"Hangup: {call_id[:8] if call_id else '???'}...",
+                        f"Длительность: {elapsed:.0f}с | Чанков: {session.chunk_count if session else 0}",
+                        level="warning",
+                    )
                     break
 
                 elif frame_type == FRAME_TYPE_ERROR:
                     logger.error("AudioSocket: ошибка от Asterisk для %s", call_id)
+                    await self._emit_log(
+                        f"Ошибка от Asterisk: {call_id[:8] if call_id else '???'}",
+                        f"Payload: {payload.hex()[:100]}",
+                        level="error",
+                    )
                     break
 
         except asyncio.IncompleteReadError:
             logger.info("AudioSocket: соединение закрыто для %s", call_id)
+            await self._emit_log(
+                f"Соединение закрыто: {call_id[:8] if call_id else '???'}",
+                level="warning",
+            )
         except Exception as e:
             logger.error("AudioSocket: %s для %s", e, call_id)
+            await self._emit_log(
+                f"Ошибка: {str(e)[:100]}",
+                f"call_id={call_id}",
+                level="error",
+            )
         finally:
             # Cleanup
             if session:
@@ -180,9 +239,19 @@ class AudioSocketServer:
         call_session = session_manager.get_session(session.call_id)
         if not call_session:
             logger.warning("STT: CallSession не найдена для %s", session.call_id)
+            await self._emit_log(
+                f"CallSession не найдена: {session.call_id[:8]}...",
+                "STT streaming не запущен -- сессия звонка не существует",
+                level="error",
+            )
             return
 
         speaker = Speaker.CLIENT if session.speaker == "client" else Speaker.MANAGER
+
+        await self._emit_log(
+            f"STT streaming запущен [{session.speaker}]",
+            f"call_id={session.call_id[:8]}... | Модель: general, ru-RU, 8kHz",
+        )
 
         stt_start = time.time()
 
@@ -211,6 +280,15 @@ class AudioSocketServer:
                     text[:80],
                 )
 
+                # Log через pipeline
+                asyncio.get_event_loop().call_soon(
+                    asyncio.ensure_future,
+                    self._emit_log(
+                        f"STT final [{session.speaker}] ({confidence*100:.0f}%): {text[:60]}",
+                        f"call_id={session.call_id[:8]}... | Полный текст: {text}",
+                    ),
+                )
+
         def on_classifier(name: str, probability: float) -> None:
             """Результат классификатора."""
             if probability > 0.7:
@@ -228,8 +306,18 @@ class AudioSocketServer:
                 on_classifier=on_classifier,
                 on_eou=on_eou,
             )
+            elapsed = time.time() - stt_start
+            await self._emit_log(
+                f"STT streaming завершён [{session.speaker}]",
+                f"call_id={session.call_id[:8]}... | Длительность: {elapsed:.0f}с",
+            )
         except Exception as e:
             logger.error("STT streaming: %s для %s", e, session.call_id)
+            await self._emit_log(
+                f"STT streaming ошибка [{session.speaker}]: {str(e)[:80]}",
+                f"call_id={session.call_id[:8]}... | Тип: {type(e).__name__}",
+                level="error",
+            )
 
 
 # Синглтон

@@ -65,6 +65,7 @@ export interface CallSession {
 export interface ServiceStatus {
   available: boolean;
   message: string;
+  error?: string;
   api_key_suffix?: string;
   folder_id?: string;
 }
@@ -86,6 +87,16 @@ export interface CheckKeysResponse {
   openai: ServiceStatus;
 }
 
+// --- Pipeline Log ---
+
+export interface PipelineLogEntry {
+  timestamp: number;
+  source: string;
+  message: string;
+  details?: string | null;
+  level: "info" | "warning" | "error";
+}
+
 // --- WebSocket ---
 
 export interface WSInitData {
@@ -98,4 +109,6 @@ export type WSCallDetailData = CallSession;
 export type WSMessage =
   | { event: "init"; data: WSInitData; timestamp: number }
   | { event: "calls_update"; data: WSInitData; timestamp: number }
-  | { event: "call_detail"; data: WSCallDetailData; timestamp: number };
+  | { event: "call_detail"; data: WSCallDetailData; timestamp: number }
+  | { event: "pipeline_log"; data: PipelineLogEntry; timestamp: number }
+  | { event: "pipeline_logs_init"; data: { logs: PipelineLogEntry[] }; timestamp: number };

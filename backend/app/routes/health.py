@@ -27,8 +27,8 @@ async def health(
     ami: AsteriskAMIClient = Depends(get_ami_client),
 ):
     """Статус всех сервисов."""
-    stt_status = await stt.check_connection()
-    llm_status = await llm.check_connection()
+    stt_status = await stt.check_connection()  # dict: {available, message}
+    llm_status = await llm.check_connection()  # dict: {available, message}
 
     return {
         "status": "ok",
@@ -55,13 +55,12 @@ async def check_keys(
     llm: LLMService = Depends(get_llm_service),
 ):
     """Проверка валидности всех API-ключей."""
-    stt_ok = await stt.check_connection()
+    stt_status = await stt.check_connection()  # dict: {available, message}
     llm_status = await llm.check_connection()
 
     return {
         "yandex_stt": {
-            "available": stt_ok,
-            "message": "SpeechKit: OK" if stt_ok else "SpeechKit: недоступен",
+            **stt_status,
             "api_key_suffix": f"...{settings.yandex_api_key[-8:]}",
             "folder_id": settings.yandex_folder_id,
         },

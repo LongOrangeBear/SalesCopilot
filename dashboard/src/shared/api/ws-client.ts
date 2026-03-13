@@ -2,8 +2,10 @@
  * WebSocket-клиент для real-time обновлений дашборда.
  */
 import { useEffect, useRef, useState, useCallback } from "react";
-import type { CallSession, WSMessage } from "@/shared/types";
+import type { CallSession, WSMessage, PipelineLogEntry } from "@/shared/types";
 import { WS_URL } from "./config";
+
+const MAX_LOG_ENTRIES = 500;
 
 function createWebSocket(
   url: string,
@@ -30,6 +32,7 @@ export function useWebSocket() {
   const [connected, setConnected] = useState(false);
   const [activeCalls, setActiveCalls] = useState<CallSession[]>([]);
   const [archivedCalls, setArchivedCalls] = useState<CallSession[]>([]);
+  const [pipelineLogs, setPipelineLogs] = useState<PipelineLogEntry[]>([]);
   const [lastEvent, setLastEvent] = useState<WSMessage | null>(null);
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
@@ -48,6 +51,15 @@ export function useWebSocket() {
             c.call_id === msg.data.call_id ? msg.data : c
           )
         );
+      } else if (msg.event === "pipeline_log") {
+        // Одиночная лог-запись
+        setPipelineLogs((prev) => {
+          const next = [...prev, msg.data];
+          return next.length > MAX_LOG_ENTRIES ? next.slice(-MAX_LOG_ENTRIES) : next;
+        });
+      } else if (msg.event === "pipeline_logs_init") {
+        // Буфер последних логов при подключении
+        setPipelineLogs(msg.data.logs || []);
       }
     } catch (e) {
       console.error("[WS] Parse error:", e);
@@ -58,6 +70,10 @@ export function useWebSocket() {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ action, ...payload }));
     }
+  }, []);
+
+  const clearLogs = useCallback(() => {
+    setPipelineLogs([]);
   }, []);
 
   useEffect(() => {
@@ -97,5 +113,5 @@ export function useWebSocket() {
     };
   }, [handleMessage]);
 
-  return { connected, activeCalls, archivedCalls, lastEvent, sendAction };
+  return { connected, activeCalls, archivedCalls, pipelineLogs, clearLogs, lastEvent, sendAction };
 }

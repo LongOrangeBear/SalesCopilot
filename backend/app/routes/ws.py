@@ -38,6 +38,17 @@ async def dashboard_ws(
             })
         )
 
+        # Отправляем буфер последних pipeline-логов
+        recent_logs = wm.get_recent_logs()
+        if recent_logs:
+            await websocket.send_text(
+                json.dumps({
+                    "event": "pipeline_logs_init",
+                    "data": {"logs": recent_logs},
+                    "timestamp": time.time(),
+                })
+            )
+
         # Слушаем команды от дашборда
         while True:
             data = await websocket.receive_text()

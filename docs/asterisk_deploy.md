@@ -149,24 +149,43 @@ remove_existing=yes
 ```ini
 ; === SalesCopilot Dialplan ===
 ; AudioSocket + MixMonitor для real-time STT и записи
+;
+; ВАЖНО: эндпоинты PJSIP называются по username (manager, client),
+; а не по номеру (100, 200). Поэтому маршрутизация явная.
 
 [general]
 static=yes
 writeprotect=no
 
 [internal]
-; Универсальный обработчик: любой набранный номер (кроме спецномеров)
-exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+; Manager (ext 100) -> PJSIP/manager
+exten => 100,1,NoOp(Call to Manager from ${CALLERID(num)})
  same => n,Set(CALL_UUID=${SHELL(cat /proc/sys/kernel/random/uuid | tr -d '\n')})
- same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
+ same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-100)
  same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
- same => n,Dial(PJSIP/${EXTEN},30,t)
+ same => n,Dial(PJSIP/manager,30,t)
+ same => n,Hangup()
+
+; Client (ext 200) -> PJSIP/client
+exten => 200,1,NoOp(Call to Client from ${CALLERID(num)})
+ same => n,Set(CALL_UUID=${SHELL(cat /proc/sys/kernel/random/uuid | tr -d '\n')})
+ same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-200)
+ same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
+ same => n,Dial(PJSIP/client,30,t)
  same => n,Hangup()
 
 ; Echo test: ext 600
 exten => 600,1,NoOp(Echo Test)
  same => n,Answer()
  same => n,Echo()
+ same => n,Hangup()
+
+; Fallback для будущих эндпоинтов (если endpoint name = extension number)
+exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+ same => n,Set(CALL_UUID=${SHELL(cat /proc/sys/kernel/random/uuid | tr -d '\n')})
+ same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
+ same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
+ same => n,Dial(PJSIP/${EXTEN},30,t)
  same => n,Hangup()
 
 ; === AudioSocket context (real-time STT) ===
@@ -181,7 +200,7 @@ exten => s,1,NoOp(AudioSocket connecting for call ${CALL_UUID})
 ; [from-trunk]
 ; exten => _X.,1,NoOp(Incoming from trunk: ${CALLERID(num)})
 ;  same => n,MixMonitor(...)
-;  same => n,Dial(PJSIP/100,30,t)
+;  same => n,Dial(PJSIP/manager,30,t)
 ;  same => n,Hangup()
 ```
 
