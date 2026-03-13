@@ -55,12 +55,13 @@ async def check_keys(
     llm: LLMService = Depends(get_llm_service),
 ):
     """Проверка валидности всех API-ключей."""
-    stt_status = await stt.check_connection()
+    stt_ok = await stt.check_connection()
     llm_status = await llm.check_connection()
 
     return {
         "yandex_stt": {
-            **stt_status,
+            "available": stt_ok,
+            "message": "SpeechKit: OK" if stt_ok else "SpeechKit: недоступен",
             "api_key_suffix": f"...{settings.yandex_api_key[-8:]}",
             "folder_id": settings.yandex_folder_id,
         },
