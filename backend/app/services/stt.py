@@ -57,7 +57,6 @@ class SpeechKitSTTClient:
             session_options=stt_pb2.StreamingOptions(
                 recognition_model=stt_pb2.RecognitionModelOptions(
                     model="general",
-                    language_code="ru-RU",
                     audio_format=stt_pb2.AudioFormatOptions(
                         raw_audio=stt_pb2.RawAudio(
                             audio_encoding=stt_pb2.RawAudio.LINEAR16_PCM,
@@ -69,6 +68,10 @@ class SpeechKitSTTClient:
                         text_normalization=stt_pb2.TextNormalizationOptions.TEXT_NORMALIZATION_ENABLED,
                         profanity_filter=True,
                         literature_text=True,
+                    ),
+                    language_restriction=stt_pb2.LanguageRestrictionOptions(
+                        restriction_type=stt_pb2.LanguageRestrictionOptions.WHITELIST,
+                        language_code=["ru-RU"],
                     ),
                 ),
                 # Классификаторы для sales copilot
@@ -103,7 +106,7 @@ class SpeechKitSTTClient:
                     descriptive_statistics_quantiles=[0.5, 0.9],
                 ),
                 # EOU -- баланс скорости и точности
-                eou_classifier_options=stt_pb2.EouClassifierOptions(
+                eou_classifier=stt_pb2.EouClassifierOptions(
                     default_classifier=stt_pb2.DefaultEouClassifier(
                         type=stt_pb2.DefaultEouClassifier.DEFAULT,
                         max_pause_between_words_hint_ms=800,
@@ -186,14 +189,12 @@ class SpeechKitSTTClient:
 
         elif event_type == "final" and on_final:
             for alt in response.final.alternatives:
-                confidence = alt.confidence if alt.HasField("confidence") else 0.0
-                on_final(alt.text, confidence)
+                on_final(alt.text, alt.confidence)
 
         elif event_type == "final_refinement" and on_final:
             # Нормализованные окончательные результаты
             for alt in response.final_refinement.normalized_text.alternatives:
-                confidence = alt.confidence if alt.HasField("confidence") else 0.0
-                on_final(alt.text, confidence)
+                on_final(alt.text, alt.confidence)
 
         elif event_type == "eou_update" and on_eou:
             on_eou()

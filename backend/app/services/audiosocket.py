@@ -237,14 +237,35 @@ class AudioSocketServer:
         from app.models.call_session import session_manager, Speaker
 
         call_session = session_manager.get_session(session.call_id)
+
+        # Retry: AudioSocket может подключиться раньше, чем AMI создаст CallSession
         if not call_session:
-            logger.warning("STT: CallSession не найдена для %s", session.call_id)
+            for attempt in range(5):
+                await asyncio.sleep(0.5)
+                call_session = session_manager.get_session(session.call_id)
+                if call_session:
+                    logger.info(
+                        "STT: CallSession найдена после retry #%d для %s",
+                        attempt + 1, session.call_id[:8],
+                    )
+                    break
+
+        if not call_session:
+            logger.warning(
+                "STT: CallSession не найдена для %s, создаём fallback",
+                session.call_id,
+            )
             await self._emit_log(
                 f"CallSession не найдена: {session.call_id[:8]}...",
-                "STT streaming не запущен -- сессия звонка не существует",
-                level="error",
+                "Создана fallback-сессия для STT streaming",
+                level="warning",
             )
-            return
+            # Создаём минимальную сессию, чтобы STT мог работать
+            from app.models.call_session import CallStatus
+            call_session = session_manager.create_session(
+                call_id=session.call_id,
+                status=CallStatus.ACTIVE,
+            )
 
         speaker = Speaker.CLIENT if session.speaker == "client" else Speaker.MANAGER
 

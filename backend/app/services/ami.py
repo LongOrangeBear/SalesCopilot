@@ -359,16 +359,25 @@ class AsteriskAMIClient:
     async def _originate_audiosocket(self, call_id: str, channel: str) -> None:
         """AMI Originate: запускаем AudioSocket для real-time STT.
 
-        Создаём Local-канал в контексте audiosocket-connect,
-        который подключается к нашему TCP-серверу AudioSocket.
+        Архитектура Local-канала:
+          ;1 leg -> dialplan [audiosocket-connect] -> AudioSocket(UUID, 127.0.0.1:9092)
+          ;2 leg -> Application=ChanSpy(channel, qS) -> шпионит за аудио звонка
+
+        Аудио от ChanSpy на ;2 проходит через Local bridge к ;1 -> AudioSocket -> TCP.
+
+        Ключевые флаги:
+          /n        -- запрет оптимизации Local-канала (иначе Asterisk уберёт мост)
+          __VAR     -- двойное подчеркивание = наследование переменной на оба leg
+          q         -- ChanSpy без звукового сигнала (тихий режим)
+          S         -- ChanSpy: остановиться при hangup прослушиваемого канала
         """
         try:
             await self._send_action({
                 "Action": "Originate",
-                "Channel": "Local/s@audiosocket-connect",
+                "Channel": "Local/s@audiosocket-connect/n",
                 "Application": "ChanSpy",
                 "Data": f"{channel},qS",
-                "Variable": f"CALL_UUID={call_id}",
+                "Variable": f"__CALL_UUID={call_id}",
                 "Async": "true",
                 "ActionID": f"audiosocket-{call_id[:8]}",
             })
