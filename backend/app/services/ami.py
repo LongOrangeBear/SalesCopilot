@@ -360,24 +360,25 @@ class AsteriskAMIClient:
         """AMI Originate: запускаем AudioSocket для real-time STT.
 
         Архитектура Local-канала:
-          ;1 leg -> dialplan [audiosocket-connect] -> AudioSocket(UUID, 127.0.0.1:9092)
+          ;1 leg -> dialplan [audiosocket-connect] -> AudioSocket(${EXTEN}, 127.0.0.1:9092)
           ;2 leg -> Application=ChanSpy(channel, qS) -> шпионит за аудио звонка
 
         Аудио от ChanSpy на ;2 проходит через Local bridge к ;1 -> AudioSocket -> TCP.
 
+        UUID передается через имя extension (${EXTEN}) Local-канала,
+        т.к. AMI Variable НЕ наследуется на ;1 leg.
+
         Ключевые флаги:
           /n        -- запрет оптимизации Local-канала (иначе Asterisk уберёт мост)
-          __VAR     -- двойное подчеркивание = наследование переменной на оба leg
           q         -- ChanSpy без звукового сигнала (тихий режим)
           S         -- ChanSpy: остановиться при hangup прослушиваемого канала
         """
         try:
             await self._send_action({
                 "Action": "Originate",
-                "Channel": "Local/s@audiosocket-connect/n",
+                "Channel": f"Local/{call_id}@audiosocket-connect/n",
                 "Application": "ChanSpy",
                 "Data": f"{channel},qS",
-                "Variable": f"__CALL_UUID={call_id}",
                 "Async": "true",
                 "ActionID": f"audiosocket-{call_id[:8]}",
             })
