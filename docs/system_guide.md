@@ -7,20 +7,20 @@
 ## 1. Архитектура системы
 
 Система состоит из трёх основных блоков:
-1. **Телефония (Asterisk на VPS):** Принимает входящие звонки от SIP-провайдера (Mango) и дублирует аудиопотоки (клиент + менеджер) на бэкенд для анализа. Управляет записью разговоров.
-2. **Бэкенд (FastAPI):** Ядро бизнес-логики. Принимает аудиопотоки, отправляет их в **Yandex SpeechKit** для потокового распознавания речи (STT), анализирует текст через **OpenAI (LLM)** и формирует подсказки для менеджера. Также управляет in-memory `CallSession` объектами и раздает обновления клиентам по WebSocket.
-3. **Админ-дашборд и Виджет (React/TS):** Веб-интерфейс для мониторинга активных звонков (Live-транскрипт, тайминги пайплайна, данные из CRM) и интерфейс менеджера (интегрирован или открыт отдельно) с подсказками ИИ.
+1. **Телефония (Asterisk на VPS):** Принимает входящие звонки от SIP-провайдера (Mango), передаёт аудиопотоки на бэкенд через **AudioSocket** (TCP, порт 9092) для real-time STT, записывает звонки через MixMonitor.
+2. **Бэкенд (FastAPI):** Ядро бизнес-логики. Принимает аудиопотоки через AudioSocket, отправляет их в **Yandex SpeechKit** (gRPC API v3) для потокового распознавания речи с классификаторами и аналитикой, анализирует текст через **OpenAI (LLM)** и формирует подсказки для менеджера. Управляет in-memory `CallSession` объектами и раздает обновления клиентам по WebSocket (каждую 1 сек).
+3. **Админ-дашборд (React/TS):** Live-мониторинг звонков: чат-визуализация транскрипта, тайминги пайплайна, данные CRM, пульсирующая иконка активного звонка, live-таймер.
 
 ### Поток данных (Data Flow)
 ```text
 [SIP Провайдер] ---> [Asterisk PBX] ---> [Менеджер (Softphone)]
                            |
-                     (Аудиопотоки)
+                    (AudioSocket TCP)
                            v
-                    [FastAPI Backend] <---> [Yandex Cloud STT]
+                    [FastAPI Backend] <---> [Yandex SpeechKit gRPC STT]
                            |          <---> [OpenAI LLM]
                            |          <---> [Bitrix24 CRM]
-                     (WebSocket)
+                     (WebSocket 1s)
                            v
                    [React Dashboard]
 ```
@@ -32,13 +32,15 @@
 Кодовая база разделена на две основные директории в `/home/meow/work/SalesCopilot`:
 
 ### `backend/` (Python/FastAPI)
-- `main.py` — Точка входа. REST API (`/api/calls`, `/api/health`) и WebSocket эндопоинт (`/ws/dashboard`).
-- `config.py` — Валидация и загрузка настроек из файла `.env` с помощью `Pydantic`.
-- `call_session.py` — Модель данных конфигурации звонка (`CallSession`) и `SessionManager` для хранения активных телефонов в оперативной памяти. Хранит транскрипты, CRM данные и историю обращений к ИИ.
-- `stt_client.py` — gRPC / REST клиент для интеграции с Yandex SpeechKit.
-- `test_api_keys.py` — Утилита проверки валидности всех API ключей.
-- `requirements.txt` — Список Python-зависимостей.
-- `.env` — (Git-ignored) Переменные окружения со всеми секретными ключами.
+- `main.py` -- Точка входа.
+- `config.py` -- Настройки из `.env` (Pydantic). Включает `BASE_DIR`, `audiosocket_port`.
+- `app/models/call_session.py` -- `CallSession` + `SessionManager` (in-memory).
+- `app/services/stt.py` -- gRPC streaming STT клиент (Yandex SpeechKit API v3) с классификаторами, speech analysis, EOU.
+- `app/services/audiosocket.py` -- TCP-сервер AudioSocket для приёма аудио из Asterisk (порт 9092).
+- `app/services/ami.py` -- AMI-клиент для отслеживания звонков Asterisk.
+- `proto/` -- gRPC proto-stubs (сгенерированы из `yandex-cloud/cloudapi`).
+- `requirements.txt` -- Python-зависимости (`grpcio>=1.71`, `protobuf>=5.29`).
+- `.env` -- (Git-ignored) API-ключи и секреты.
 
 ### `dashboard/` (React/Vite)
 - `src/App.tsx` — Главный UI: список звонков, транскрипт, параметры CallSession, тайминги пайплайна, чеклист сервисов.
@@ -109,8 +111,9 @@
 |---|---|---|
 | Backend (uvicorn) | 8000 | 8211 |
 | Dashboard (Vite / nginx) | 5173 | 3211 |
+| AudioSocket (STT) | 9092 | 9092 |
 | Asterisk SIP | - | 5060 |
-| Asterisk ARI | - | 8088 |
+| Asterisk AMI | - | 5038 |
 
 > **Примечание:** На продакшене используются нестандартные порты (8211, 3211), чтобы не конфликтовать с другими сервисами на VPS. Порт задаётся в systemd unit (`/etc/systemd/system/salescopilot-backend.service`) и в production `.env` (`PORT=8211`). Nginx слушает на порту 3211 и проксирует `/api/` и `/ws/` на backend (8211).
 
@@ -150,6 +153,11 @@ trap "kill $BG_PID" EXIT
 
 ---
 
-## 6. Что дальше (Ожидание интеграции)
-В данный момент бэкенд содержит *демо-сессию* (`main.py -> create_demo_session`), чтобы дашборд мог отображать данные. 
-Следующим этапом будет удаление демо-сессии и получение реальных аудиопотоков из **Asterisk (через ARI или AudioSocket)**, как только на VPS будет подключен SIP-транк к провайдеру Mango.
+## 6. Что дальше
+
+Аудиопоток из Asterisk передаётся через AudioSocket -> STT -> транскрипт -> дашборд.
+
+Осталось:
+1. Подключить SIP-транк (Mango Office) к Asterisk
+2. Добавить AMI Originate для автоматического запуска AudioSocket при BridgeEnter
+3. Реализовать подсказки ИИ на основе транскрипта + классификаторов SpeechKit

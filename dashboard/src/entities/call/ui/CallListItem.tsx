@@ -1,13 +1,17 @@
 /**
  * Элемент списка звонков в сайдбаре.
+ *
+ * - Пульсирующая иконка для активных звонков
+ * - Live-таймер для активных, статический для завершённых
+ * - Индикатор "кто говорит"
  */
 import {
   Phone,
+  PhoneCall,
   PhoneIncoming,
 } from "lucide-react";
-import { cn } from "@/shared/lib";
+import { cn, useCallTimer } from "@/shared/lib";
 import { SpeakingIndicator } from "@/shared/ui";
-import { formatTime } from "@/shared/lib";
 import type { CallSession } from "@/shared/types";
 
 interface CallListItemProps {
@@ -18,6 +22,11 @@ interface CallListItemProps {
 
 export function CallListItem({ call, selected, onClick }: CallListItemProps) {
   const isActive = call.status === "active";
+  const timerValue = useCallTimer(
+    call.answered_at || call.started_at,
+    isActive,
+    call.duration_seconds,
+  );
 
   return (
     <button
@@ -32,7 +41,9 @@ export function CallListItem({ call, selected, onClick }: CallListItemProps) {
     >
       <div className="flex items-center justify-between mb-1">
         <div className="flex items-center gap-2">
-          {call.direction === "inbound" ? (
+          {isActive ? (
+            <PhoneCall className="w-4 h-4 text-green-400 animate-pulse-call" />
+          ) : call.direction === "inbound" ? (
             <PhoneIncoming className="w-4 h-4 text-green-400" />
           ) : (
             <Phone className="w-4 h-4 text-blue-400" />
@@ -63,7 +74,9 @@ export function CallListItem({ call, selected, onClick }: CallListItemProps) {
         <span>
           {call.callee_name || call.callee_number} (доб. {call.manager_extension})
         </span>
-        <span>{formatTime(call.duration_seconds)}</span>
+        <span className={cn("font-mono", isActive && "text-green-400")}>
+          {timerValue}
+        </span>
       </div>
       {call.current_speaker && isActive && (
         <div className="mt-1 text-xs">

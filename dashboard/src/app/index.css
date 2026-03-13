@@ -89,3 +89,21 @@
   background: #eab308;
   box-shadow: 0 0 6px rgba(234, 179, 8, 0.5);
 }
+
+/* Пульсирующая иконка активного звонка */
+@keyframes pulse-call {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.15); }
+}
+.animate-pulse-call {
+  animation: pulse-call 2s ease-in-out infinite;
+}
+
+/* Glow-подсветка активного говорящего */
+.speaker-glow-client {
+  filter: drop-shadow(0 0 6px rgba(59, 130, 246, 0.6));
+}
+.speaker-glow-manager {
+  filter: drop-shadow(0 0 6px rgba(34, 197, 94, 0.6));
+}
+

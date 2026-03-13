@@ -2,12 +2,12 @@
  * Виджет деталей звонка -- композиция подкомпонентов.
  *
  * Каждый блок вынесен в отдельный файл:
- * - TranscriptPanel: live-транскрипт
+ * - TranscriptPanel: live-транскрипт (чат)
  * - SessionInfo: параметры сессии + CRM
  * - AIRequestsPanel: запросы и ответы ИИ
  * - PipelineTimingsPanel: тайминги пайплайна
  */
-import { formatTime, formatTimestamp } from "@/shared/lib";
+import { formatTimestamp, useCallTimer } from "@/shared/lib";
 import type { CallSession } from "@/shared/types";
 
 import { TranscriptPanel } from "./TranscriptPanel";
@@ -20,6 +20,13 @@ interface CallDetailProps {
 }
 
 export function CallDetail({ call }: CallDetailProps) {
+  const isActive = call.status === "active";
+  const timerValue = useCallTimer(
+    call.answered_at || call.started_at,
+    isActive,
+    call.duration_seconds,
+  );
+
   return (
     <div className="space-y-4">
       {/* Header */}
@@ -32,7 +39,7 @@ export function CallDetail({ call }: CallDetailProps) {
         </div>
         <div className="text-right">
           <div className="text-2xl font-mono font-bold text-primary">
-            {formatTime(call.duration_seconds)}
+            {timerValue}
           </div>
           <p className="text-xs text-muted-foreground">
             Начало: {formatTimestamp(call.started_at)}

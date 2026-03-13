@@ -1,5 +1,6 @@
 """SalesCopilot Backend -- фабрика FastAPI-приложения."""
 
+import asyncio
 import logging
 import time
 
@@ -10,6 +11,23 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _periodic_broadcast(wm, sm) -> None:
+    """Периодическая отправка обновлений дашбордам (каждую 1 сек).
+
+    Обеспечивает live-обновление таймера, current_speaker и pipeline_timings.
+    """
+    while True:
+        await asyncio.sleep(1.0)
+        try:
+            if sm.active_count > 0 and wm.active_connections:
+                await wm.broadcast("calls_update", {
+                    "active_calls": [s.to_dict() for s in sm.active_calls],
+                    "archived_calls": [s.to_dict() for s in sm.archived_calls],
+                })
+        except Exception as e:
+            logger.error(f"Periodic broadcast: {e}")
 
 
 @asynccontextmanager
@@ -27,9 +45,26 @@ async def lifespan(app: FastAPI):
     from app.services.ami import ami_client
     await ami_client.start()
 
+    # Запускаем AudioSocket-сервер для приёма аудио из Asterisk
+    from app.services.audiosocket import audiosocket_server
+    await audiosocket_server.start()
+
+    # Запускаем периодический broadcast для live-обновлений
+    from app.models.call_session import session_manager
+    from app.core.ws_manager import ws_manager
+    broadcast_task = asyncio.create_task(_periodic_broadcast(ws_manager, session_manager))
+    logger.info("Periodic broadcast запущен")
+
     yield
 
     # Shutdown
+    broadcast_task.cancel()
+    try:
+        await broadcast_task
+    except asyncio.CancelledError:
+        pass
+
+    await audiosocket_server.stop()
     await ami_client.stop()
 
     from app.services.stt import stt_client

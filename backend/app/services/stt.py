@@ -1,166 +1,237 @@
-"""Yandex SpeechKit -- клиент потокового распознавания речи (streaming STT)."""
+"""Yandex SpeechKit STT -- gRPC Streaming API v3.
+
+Bidirectional streaming клиент для real-time распознавания речи.
+Поддерживает:
+- Streaming recognition с partial и final results
+- Классификаторы (приветствие, прощание, негатив, мат, автоответчик)
+- Аналитику речи (скорость, паузы, перебивания)
+- Нормализацию текста (числа, даты, пунктуация)
+- EOU (End-of-Utterance) детекцию
+- Ротацию сессии каждые 4.5 мин (лимит 5 мин)
+"""
 
 import asyncio
 import logging
+import sys
+import time
 from typing import AsyncGenerator, Callable, Optional
 
 import grpc
-import httpx
 
 from config import settings
+
+# Добавляем proto/ в sys.path для импорта сгенерированных stubs
+sys.path.insert(0, str(settings.BASE_DIR / "proto"))
+
+from yandex.cloud.ai.stt.v3 import stt_pb2, stt_service_pb2_grpc  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
 # Yandex SpeechKit gRPC endpoint
-STT_ENDPOINT = "stt.api.cloud.yandex.net:443"
+SPEECHKIT_ENDPOINT = "stt.api.cloud.yandex.net:443"
 
-# Параметры распознавания
-SAMPLE_RATE = 8000  # Стандарт телефонии
-AUDIO_ENCODING = "LINEAR16_PCM"
-LANGUAGE_CODE = "ru-RU"
-CHUNK_SIZE = 4096  # байтов на chunk
+# Лимит сессии -- 5 мин, ротация на 4.5 мин
+SESSION_ROTATION_SEC = 270  # 4.5 мин
 
 
 class SpeechKitSTTClient:
-    """Потоковое распознавание речи через Yandex SpeechKit gRPC API v3.
+    """gRPC streaming STT клиент для Yandex SpeechKit API v3."""
 
-    Использует bidirectional streaming:
-    клиент отправляет аудио-чанки, сервер возвращает распознанный текст.
-    """
-
-    def __init__(self):
-        self.api_key = settings.yandex_api_key
-        self.folder_id = settings.yandex_folder_id
+    def __init__(self) -> None:
+        self._api_key: str = settings.yandex_api_key
+        self._folder_id: str = settings.yandex_folder_id
         self._channel: Optional[grpc.aio.Channel] = None
-        self._http_client: Optional[httpx.AsyncClient] = None
+        self._stub: Optional[stt_service_pb2_grpc.RecognizerStub] = None
 
-    async def _get_http_client(self) -> httpx.AsyncClient:
-        """Получает или создаёт shared httpx-клиент."""
-        if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(timeout=30.0)
-        return self._http_client
-
-    async def _get_channel(self) -> grpc.aio.Channel:
-        """Получает или создаёт gRPC канал."""
+    async def _ensure_channel(self) -> None:
+        """Создать или переиспользовать gRPC-канал."""
         if self._channel is None:
-            credentials = grpc.ssl_channel_credentials()
-            self._channel = grpc.aio.secure_channel(STT_ENDPOINT, credentials)
-        return self._channel
+            creds = grpc.ssl_channel_credentials()
+            self._channel = grpc.aio.secure_channel(SPEECHKIT_ENDPOINT, creds)
+            self._stub = stt_service_pb2_grpc.RecognizerStub(self._channel)
+            logger.info("STT: gRPC канал создан")
 
-    async def recognize_stream(
-        self,
-        audio_generator: AsyncGenerator[bytes, None],
-        on_result: Callable[[str, bool, float], None],
-        language_code: str = LANGUAGE_CODE,
-    ) -> None:
-        """Запускает потоковое распознавание.
-
-        Args:
-            audio_generator: Асинхронный генератор аудио-чанков (LPCM 8000Hz mono).
-            on_result: Callback: (текст, is_final, confidence).
-            language_code: Язык распознавания.
-        """
-        try:
-            channel = await self._get_channel()
-
-            # В реальном проекте нужно сгенерировать stubs из Yandex Cloud API proto.
-            # Пока используем REST-fallback через httpx.
-            await self._recognize_rest_fallback(audio_generator, on_result, language_code)
-
-        except Exception as e:
-            logger.error(f"STT streaming error: {e}")
-            raise
-
-    async def _recognize_rest_fallback(
-        self,
-        audio_generator: AsyncGenerator[bytes, None],
-        on_result: Callable[[str, bool, float], None],
-        language_code: str,
-    ) -> None:
-        """Fallback -- распознавание через REST API (не streaming,
-        но работает без proto-генерации).
-
-        Для MVP достаточно. gRPC streaming подключим, когда пойдёт реальный
-        аудиопоток из Asterisk.
-        """
-        url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
-        headers = {"Authorization": f"Api-Key {self.api_key}"}
-        params = {
-            "lang": language_code,
-            "folderId": self.folder_id,
-            "format": "lpcm",
-            "sampleRateHertz": str(SAMPLE_RATE),
-        }
-
-        # Собираем аудио в буфер
-        audio_buffer = bytearray()
-        async for chunk in audio_generator:
-            audio_buffer.extend(chunk)
-
-        if not audio_buffer:
-            logger.warning("Пустой аудиобуфер, пропускаем распознавание")
-            return
-
-        client = await self._get_http_client()
-        response = await client.post(
-            url,
-            headers=headers,
-            params=params,
-            content=bytes(audio_buffer),
+    def _build_session_options(self) -> stt_pb2.StreamingRequest:
+        """Формирование настроек сессии распознавания."""
+        return stt_pb2.StreamingRequest(
+            session_options=stt_pb2.StreamingOptions(
+                recognition_model=stt_pb2.RecognitionModelOptions(
+                    model="general",
+                    language_code="ru-RU",
+                    audio_format=stt_pb2.AudioFormatOptions(
+                        raw_audio=stt_pb2.RawAudio(
+                            audio_encoding=stt_pb2.RawAudio.LINEAR16_PCM,
+                            sample_rate_hertz=8000,
+                            audio_channel_count=1,
+                        )
+                    ),
+                    text_normalization=stt_pb2.TextNormalizationOptions(
+                        text_normalization=stt_pb2.TextNormalizationOptions.TEXT_NORMALIZATION_ENABLED,
+                        profanity_filter=True,
+                        literature_text=True,
+                    ),
+                ),
+                # Классификаторы для sales copilot
+                recognition_classifier=stt_pb2.RecognitionClassifierOptions(
+                    classifiers=[
+                        stt_pb2.RecognitionClassifier(
+                            classifier="formal_greeting",
+                            triggers=[stt_pb2.RecognitionClassifier.ON_UTTERANCE],
+                        ),
+                        stt_pb2.RecognitionClassifier(
+                            classifier="informal_greeting",
+                            triggers=[stt_pb2.RecognitionClassifier.ON_UTTERANCE],
+                        ),
+                        stt_pb2.RecognitionClassifier(
+                            classifier="formal_farewell",
+                            triggers=[stt_pb2.RecognitionClassifier.ON_UTTERANCE],
+                        ),
+                        stt_pb2.RecognitionClassifier(
+                            classifier="negative",
+                            triggers=[stt_pb2.RecognitionClassifier.ON_UTTERANCE],
+                        ),
+                        stt_pb2.RecognitionClassifier(
+                            classifier="answerphone",
+                            triggers=[stt_pb2.RecognitionClassifier.ON_UTTERANCE],
+                        ),
+                    ]
+                ),
+                # Аналитика речи
+                speech_analysis=stt_pb2.SpeechAnalysisOptions(
+                    enable_speaker_analysis=True,
+                    enable_conversation_analysis=True,
+                    descriptive_statistics_quantiles=[0.5, 0.9],
+                ),
+                # EOU -- баланс скорости и точности
+                eou_classifier_options=stt_pb2.EouClassifierOptions(
+                    default_classifier=stt_pb2.DefaultEouClassifier(
+                        type=stt_pb2.DefaultEouClassifier.DEFAULT,
+                        max_pause_between_words_hint_ms=800,
+                    ),
+                ),
+            )
         )
 
-        if response.status_code == 200:
-            result = response.json()
-            text = result.get("result", "")
-            if text:
-                on_result(text, True, 1.0)
-        else:
-            logger.error(
-                f"STT REST ошибка: {response.status_code} -- {response.text}"
+    async def recognize_streaming(
+        self,
+        audio_generator: AsyncGenerator[bytes, None],
+        on_partial: Optional[Callable[[str], None]] = None,
+        on_final: Optional[Callable[[str, float], None]] = None,
+        on_classifier: Optional[Callable[[str, float], None]] = None,
+        on_eou: Optional[Callable[[], None]] = None,
+    ) -> None:
+        """Запуск bidirectional streaming распознавания.
+
+        Args:
+            audio_generator: Async-генератор аудио-чанков (LINEAR16_PCM, 8kHz, mono)
+            on_partial: Callback для промежуточных результатов (text)
+            on_final: Callback для финальных результатов (text, confidence)
+            on_classifier: Callback для классификаторов (classifier_name, probability)
+            on_eou: Callback для End-of-Utterance
+        """
+        await self._ensure_channel()
+
+        session_start = time.time()
+
+        async def request_generator():
+            # Первое сообщение -- настройки сессии
+            yield self._build_session_options()
+
+            # Далее -- аудио-чанки
+            async for chunk in audio_generator:
+                # Проверка ротации сессии
+                elapsed = time.time() - session_start
+                if elapsed >= SESSION_ROTATION_SEC:
+                    logger.info("STT: ротация сессии (%.0f сек)", elapsed)
+                    return
+
+                yield stt_pb2.StreamingRequest(
+                    chunk=stt_pb2.AudioChunk(data=chunk)
+                )
+
+        metadata = [("authorization", f"Api-Key {self._api_key}")]
+        if self._folder_id:
+            metadata.append(("x-folder-id", self._folder_id))
+
+        try:
+            responses = self._stub.RecognizeStreaming(
+                request_generator(),
+                metadata=metadata,
             )
 
-    async def check_connection(self) -> dict:
-        """Проверяет доступность SpeechKit API.
+            async for response in responses:
+                self._process_response(response, on_partial, on_final, on_classifier, on_eou)
 
-        Returns:
-            dict с ключами 'available' (bool) и 'message' (str).
-        """
-        try:
-            url = "https://stt.api.cloud.yandex.net/speech/v1/stt:recognize"
-            headers = {"Authorization": f"Api-Key {self.api_key}"}
-
-            client = await self._get_http_client()
-            # Отправляем пустой запрос -- ожидаем 400 "audio should be not empty"
-            # Это значит, что аутентификация прошла успешно
-            response = await client.post(url, headers=headers, content=b"")
-
-            if response.status_code == 400:
-                body = response.json()
-                if "audio should be not empty" in body.get("error_message", ""):
-                    return {"available": True, "message": "SpeechKit STT: OK"}
-
-            if response.status_code == 401 or response.status_code == 403:
-                return {
-                    "available": False,
-                    "message": f"SpeechKit STT: ошибка авторизации ({response.status_code})",
-                }
-
-            return {
-                "available": False,
-                "message": f"SpeechKit STT: неожиданный статус {response.status_code}",
-            }
+        except grpc.aio.AioRpcError as e:
+            logger.error("STT gRPC: %s (code=%s)", e.details(), e.code())
+            raise
         except Exception as e:
-            return {"available": False, "message": f"SpeechKit STT: {str(e)}"}
+            logger.error("STT: %s", e)
+            raise
 
-    async def close(self):
-        """Закрывает gRPC канал и HTTP-клиент."""
+    def _process_response(
+        self,
+        response: stt_pb2.StreamingResponse,
+        on_partial: Optional[Callable],
+        on_final: Optional[Callable],
+        on_classifier: Optional[Callable],
+        on_eou: Optional[Callable],
+    ) -> None:
+        """Обработка ответа от SpeechKit."""
+        event_type = response.WhichOneof("Event")
+
+        if event_type == "partial" and on_partial:
+            for alt in response.partial.alternatives:
+                on_partial(alt.text)
+
+        elif event_type == "final" and on_final:
+            for alt in response.final.alternatives:
+                confidence = alt.confidence if alt.HasField("confidence") else 0.0
+                on_final(alt.text, confidence)
+
+        elif event_type == "final_refinement" and on_final:
+            # Нормализованные окончательные результаты
+            for alt in response.final_refinement.normalized_text.alternatives:
+                confidence = alt.confidence if alt.HasField("confidence") else 0.0
+                on_final(alt.text, confidence)
+
+        elif event_type == "eou_update" and on_eou:
+            on_eou()
+
+        elif event_type == "classifier_update" and on_classifier:
+            update = response.classifier_update
+            classifier_name = update.classifier_result.classifier
+            for label in update.classifier_result.highlights:
+                on_classifier(classifier_name, label.value)
+
+        elif event_type == "speaker_analysis":
+            # Аналитика по говорящему -- логируем
+            logger.debug("STT speaker_analysis: %s", response.speaker_analysis)
+
+        elif event_type == "conversation_analysis":
+            # Аналитика по диалогу -- логируем
+            logger.debug("STT conversation_analysis: %s", response.conversation_analysis)
+
+    async def check_connection(self) -> bool:
+        """Проверка доступности gRPC-канала."""
+        try:
+            await self._ensure_channel()
+            # Пробуем создать канал и проверить connectivity
+            state = self._channel.get_state(try_to_connect=True)
+            logger.info("STT: gRPC state = %s", state)
+            return True
+        except Exception as e:
+            logger.error("STT: check_connection failed: %s", e)
+            return False
+
+    async def close(self) -> None:
+        """Закрытие gRPC-канала."""
         if self._channel:
             await self._channel.close()
             self._channel = None
-        if self._http_client and not self._http_client.is_closed:
-            await self._http_client.aclose()
-            self._http_client = None
+            self._stub = None
+            logger.info("STT: gRPC канал закрыт")
 
 
-# Глобальный экземпляр
+# Синглтон
 stt_client = SpeechKitSTTClient()

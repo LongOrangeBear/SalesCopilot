@@ -148,25 +148,33 @@ remove_existing=yes
 
 ```ini
 ; === SalesCopilot Dialplan ===
-; Универсальный шаблон _X. -- маршрутизирует любой набранный номер
-; Новый эндпоинт в pjsip.conf автоматически становится вызываемым
+; AudioSocket + MixMonitor для real-time STT и записи
 
 [general]
 static=yes
 writeprotect=no
 
 [internal]
-; Универсальный обработчик: любой набранный номер
+; Универсальный обработчик: любой набранный номер (кроме спецномеров)
 exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+ same => n,Set(CALL_UUID=${SHELL(cat /proc/sys/kernel/random/uuid | tr -d '\n')})
  same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
  same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
  same => n,Dial(PJSIP/${EXTEN},30,t)
  same => n,Hangup()
 
-; Echo test: ext 600 (говоришь -- слышишь себя)
+; Echo test: ext 600
 exten => 600,1,NoOp(Echo Test)
  same => n,Answer()
  same => n,Echo()
+ same => n,Hangup()
+
+; === AudioSocket context (real-time STT) ===
+; Вызывается через AMI Originate для подключения аудиопотока к STT-серверу
+[audiosocket-connect]
+exten => s,1,NoOp(AudioSocket connecting for call ${CALL_UUID})
+ same => n,Answer()
+ same => n,AudioSocket(${CALL_UUID},127.0.0.1:9092)
  same => n,Hangup()
 
 ; -- Для подключения SIP-транка (Манго и т.д.) добавить:
@@ -177,9 +185,46 @@ exten => 600,1,NoOp(Echo Test)
 ;  same => n,Hangup()
 ```
 
-**MixMonitor** -- записывает звонок в WAV. Параметр `r` записывает поток в формате, совместимом с дальнейшей обработкой. Записи хранятся в `/var/spool/asterisk/monitor/`.
+**Ключевые изменения:**
 
-**Универсальный шаблон `_X.`** -- матчит любой набранный номер из одной и более цифр. `${EXTEN}` автоматически подставляется как имя PJSIP-эндпоинта. Добавление нового менеджера = только `pjsip.conf`, dialplan трогать не нужно.
+| Элемент | Зачем |
+|---|---|
+| `CALL_UUID` | Уникальный ID звонка, передается в AudioSocket и AMI для маппинга CallSession |
+| `MixMonitor` | Записывает звонок в WAV (как раньше) |
+| `[audiosocket-connect]` | Контекст для подключения аудиопотока к бэкенду через AudioSocket. Вызывается через AMI `Originate` |
+
+**Как работает AudioSocket:**
+
+1. AMI-клиент бэкенда получает событие `BridgeEnter` (звонок соединён)
+2. AMI отправляет `Originate` на `Local/s@audiosocket-connect` с переменной `CALL_UUID`
+3. Asterisk открывает TCP-соединение к `127.0.0.1:9092` (AudioSocket-сервер бэкенда)
+4. Аудио передаётся в real-time -> STT -> транскрипт -> дашборд
+
+---
+
+## 5.1 AudioSocket для real-time STT
+
+### Проверка модуля AudioSocket
+
+```bash
+asterisk -rx 'module show like audiosocket'
+# Должно быть: app_audiosocket.so, chan_audiosocket.so, res_audiosocket.so
+```
+
+### Firewall
+
+```bash
+ufw allow 9092/tcp comment 'AudioSocket STT'
+```
+
+### Порт AudioSocket (backend)
+
+Backend слушает TCP-порт **9092** для AudioSocket-соединений. Настраивается в `.env`:
+```
+AUDIOSOCKET_PORT=9092
+```
+
+> **ВАЖНО:** AudioSocket работает на `127.0.0.1` (localhost). Asterisk и backend должны быть на одном сервере. Если backend на другом хосте, заменить `127.0.0.1` в `extensions.conf` на IP бэкенда.
 
 ---
 
@@ -414,6 +459,7 @@ writeprotect=no
 
 [internal]
 exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
+ same => n,Set(CALL_UUID=${SHELL(cat /proc/sys/kernel/random/uuid | tr -d '\n')})
  same => n,Set(MONITOR_FILENAME=/var/spool/asterisk/monitor/${STRFTIME(${EPOCH},,%Y%m%d-%H%M%S)}-${CALLERID(num)}-to-${EXTEN})
  same => n,MixMonitor(${MONITOR_FILENAME}.wav,r)
  same => n,Dial(PJSIP/${EXTEN},30,t)
@@ -421,6 +467,12 @@ exten => _X.,1,NoOp(Call from ${CALLERID(num)} to ${EXTEN})
 
 exten => 600,1,Answer()
  same => n,Echo()
+ same => n,Hangup()
+
+[audiosocket-connect]
+exten => s,1,NoOp(AudioSocket connecting for call ${CALL_UUID})
+ same => n,Answer()
+ same => n,AudioSocket(${CALL_UUID},127.0.0.1:9092)
  same => n,Hangup()
 EOF
 
@@ -444,6 +496,7 @@ ufw allow 5060/tcp
 ufw allow 10000:20000/udp
 ufw allow 3211/tcp comment 'SalesCopilot Dashboard'
 ufw allow 8211/tcp comment 'SalesCopilot Backend'
+ufw allow 9092/tcp comment 'AudioSocket STT'
 echo 'y' | ufw enable
 
 systemctl restart asterisk
@@ -453,4 +506,5 @@ echo "=== DONE ==="
 echo "Asterisk $(asterisk -V) running on ${EXTERNAL_IP}:5060"
 echo "Accounts: manager/${MANAGER_PASS} (ext 100), client/${CLIENT_PASS} (ext 200)"
 echo "Echo test: ext 600"
+echo "AudioSocket: 127.0.0.1:9092 (context: audiosocket-connect)"
 ```

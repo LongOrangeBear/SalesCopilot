@@ -5,7 +5,7 @@
 
 Архитектура:
   AMI (события) -> SessionManager -> WebSocket -> Dashboard
-  AudioSocket (аудио) -> STT -> CallSession.transcript  (следующий этап)
+  BridgeEnter -> AMI Originate -> AudioSocket -> STT -> CallSession.transcript
 """
 
 import asyncio
@@ -87,6 +87,8 @@ class AsteriskAMIClient:
         self._channel_names: dict[str, str] = {}
         # Маппинг Linkedid -> call_id (группировка каналов одного звонка)
         self._linked_map: dict[str, str] = {}
+        # Трекинг AudioSocket Originate (чтобы не дублировать)
+        self._audiosocket_originated: set[str] = set()
 
     @property
     def is_connected(self) -> bool:
@@ -290,9 +292,14 @@ class AsteriskAMIClient:
         await self._broadcast_update()
 
     async def _on_bridge_enter(self, event: dict[str, str]) -> None:
-        """BridgeEnter: канал вошёл в мост (разговор начался)."""
+        """BridgeEnter: канал вошёл в мост (разговор начался). Запускаем AudioSocket."""
         uniqueid = event.get("Uniqueid", "")
         linkedid = event.get("Linkedid", "")
+        channel = event.get("Channel", "")
+
+        # Пропускаем Local-каналы (наши же Originate)
+        if _should_ignore_channel(channel):
+            return
 
         call_id = self._channel_map.get(uniqueid) or self._linked_map.get(linkedid)
         if not call_id:
@@ -304,6 +311,11 @@ class AsteriskAMIClient:
             session.answered_at = session.answered_at or time.time()
             logger.info(f"AMI: BridgeEnter (call_id={call_id[:8]})")
             await self._broadcast_update()
+
+        # Запускаем AudioSocket один раз на звонок (BridgeEnter приходит дважды)
+        if call_id not in self._audiosocket_originated:
+            self._audiosocket_originated.add(call_id)
+            await self._originate_audiosocket(call_id, channel)
 
     async def _on_hangup(self, event: dict[str, str]) -> None:
         """Hangup: канал закрыт. Завершаем сессию, если оба канала положили трубку."""
@@ -335,6 +347,7 @@ class AsteriskAMIClient:
             self._linked_map = {
                 k: v for k, v in self._linked_map.items() if v != call_id
             }
+            self._audiosocket_originated.discard(call_id)
             logger.info(f"AMI: Hangup -- звонок завершён (call_id={call_id[:8]})")
             await self._broadcast_update()
         else:
@@ -342,6 +355,30 @@ class AsteriskAMIClient:
                 f"AMI: Hangup одного канала, звонок продолжается "
                 f"(call_id={call_id[:8]}, осталось каналов: {len(remaining_channels)})"
             )
+
+    async def _originate_audiosocket(self, call_id: str, channel: str) -> None:
+        """AMI Originate: запускаем AudioSocket для real-time STT.
+
+        Создаём Local-канал в контексте audiosocket-connect,
+        который подключается к нашему TCP-серверу AudioSocket.
+        """
+        try:
+            await self._send_action({
+                "Action": "Originate",
+                "Channel": "Local/s@audiosocket-connect",
+                "Application": "ChanSpy",
+                "Data": f"{channel},qS",
+                "Variable": f"CALL_UUID={call_id}",
+                "Async": "true",
+                "ActionID": f"audiosocket-{call_id[:8]}",
+            })
+            logger.info(
+                f"AMI: AudioSocket Originate отправлен "
+                f"(call_id={call_id[:8]}, channel={channel})"
+            )
+        except Exception as e:
+            logger.error(f"AMI: AudioSocket Originate ошибка: {e}")
+            self._audiosocket_originated.discard(call_id)
 
     async def _broadcast_update(self) -> None:
         """Отправить обновление списка звонков всем дашбордам."""

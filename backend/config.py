@@ -1,8 +1,12 @@
 """Конфигурация приложения -- загрузка из .env"""
 
+from pathlib import Path
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import Optional
+
+# Корень backend/
+BASE_DIR = Path(__file__).resolve().parent
 
 
 class Settings(BaseSettings):
@@ -28,9 +32,13 @@ class Settings(BaseSettings):
     host: str = Field(default="0.0.0.0")
     port: int = Field(default=8000)
     debug: bool = Field(default=True)
+    audiosocket_port: int = Field(default=9092, description="AudioSocket TCP port")
 
     # Dashboard
     dashboard_url: Optional[str] = Field(default="http://localhost:5173")
+
+    # Path
+    BASE_DIR: Path = BASE_DIR
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
