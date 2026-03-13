@@ -42,12 +42,16 @@
 - `requirements.txt` -- Python-зависимости (`grpcio>=1.71`, `protobuf>=5.29`).
 - `.env` -- (Git-ignored) API-ключи и секреты.
 
-### `dashboard/` (React/Vite)
-- `src/App.tsx` — Главный UI: список звонков, транскрипт, параметры CallSession, тайминги пайплайна, чеклист сервисов.
-- `src/hooks/useWebSocket.ts` — Хук для соединения с бэкендом (с авто-переподключением).
-- `src/types.ts` — TypeScript типы (отражают модели бэкенда).
-- `src/index.css` — Стили Tailwind с CSS переменными shadcn/ui.
-- `tailwind.config.js` — Конфигурация Tailwind.
+### `dashboard/` (React/Vite, FSD-архитектура)
+- `src/app/App.tsx` -- Главный UI: роутинг по табам (монитор, чеклист, настройки).
+- `src/app/index.css` -- Стили Tailwind с CSS переменными shadcn/ui.
+- `src/pages/` -- Страницы: monitor, checklist, settings.
+- `src/features/` -- Фичи: system-check и др.
+- `src/entities/call/` -- Entity звонков с компонентами.
+- `src/shared/api/` -- API-клиент и WebSocket-конфигурация.
+- `src/shared/types/` -- TypeScript типы.
+- `src/shared/ui/` -- UI-компоненты.
+- `tailwind.config.js` -- Конфигурация Tailwind.
 
 ### `docs/` (Документация)
 - `asterisk_deploy.md` — Инструкция по деплою и настройке Asterisk на VPS.
@@ -78,7 +82,7 @@
    *(Если зависимости изменились, установите их: `pip install -r requirements.txt`)*
 3. Проверьте валидность API-ключей (опционально):
    ```bash
-   python test_api_keys.py
+   curl http://localhost:8000/api/check-keys
    ```
 4. Запустите сервер (Uvicorn):
    ```bash
@@ -153,7 +157,113 @@ trap "kill $BG_PID" EXIT
 
 ---
 
-## 6. Что дальше
+## 6. CI/CD: Деплой на VPS
+
+### 6.1. Пайплайн
+
+Деплой автоматический -- push в `main` запускает GitHub Actions:
+
+```text
+git push origin main
+       |
+       v
+[GitHub Actions]  -->  SSH на VPS  -->  deploy.sh
+       |                                    |
+       v                                    v
+[Verify step]                        git pull
+  - systemctl is-active              pip install -r requirements.txt
+  - curl /api/health                 npm ci && npm run build
+  - cat version.json                 systemctl restart backend
+                                     systemctl reload nginx
+```
+
+### 6.2. Файлы деплоя
+
+| Файл | Где | Назначение |
+|---|---|---|
+| `.github/workflows/deploy.yml` | Репозиторий | GitHub Actions workflow |
+| `deploy.sh` | Репозиторий (корень) | Скрипт деплоя, выполняется на VPS |
+| `dashboard/.env.production` | Репозиторий | Vite env для production-сборки |
+
+### 6.3. GitHub Secrets
+
+Настроены в Settings -> Secrets and variables -> Actions:
+
+| Secret | Описание |
+|---|---|
+| `VPS_HOST` | IP-адрес VPS |
+| `VPS_USER` | SSH-пользователь (root) |
+| `VPS_SSH_KEY` | Приватный SSH-ключ |
+| `VPS_PORT` | SSH-порт (22) |
+
+### 6.4. Ручной деплой
+
+Если GitHub Actions недоступен:
+```bash
+ssh root@<VPS_IP>
+cd /opt/salescopilot
+git pull origin main
+chmod +x deploy.sh
+./deploy.sh
+```
+
+---
+
+## 7. Production: конфигурация на VPS
+
+### 7.1. Структура на сервере
+
+```text
+/opt/salescopilot/
+  backend/
+    .env              # Production API-ключи (PORT=8211, DASHBOARD_URL=http://enotai.ru:3211)
+    venv/             # Python virtualenv
+  dashboard/
+    dist/             # Собранный фронтенд (npm run build)
+    dist/version.json # Генерируется deploy.sh
+  deploy.sh           # Скрипт деплоя
+```
+
+### 7.2. Systemd
+
+```text
+/etc/systemd/system/salescopilot-backend.service
+```
+
+Основные параметры:
+- `WorkingDirectory=/opt/salescopilot/backend`
+- `ExecStart=...uvicorn main:app --host 0.0.0.0 --port 8211`
+- `EnvironmentFile=/opt/salescopilot/backend/.env`
+
+Команды:
+```bash
+systemctl status salescopilot-backend
+systemctl restart salescopilot-backend
+journalctl -u salescopilot-backend -f   # логи
+```
+
+### 7.3. Nginx
+
+Nginx слушает порт **3211** и отдаёт:
+- Статику дашборда из `/opt/salescopilot/dashboard/dist/`
+- Проксирует `/api/` и `/ws/` на бэкенд (`127.0.0.1:8211`)
+
+### 7.4. Production `.env` (backend)
+
+Ключевые отличия от dev:
+```bash
+PORT=8211
+DEBUG=false
+DASHBOARD_URL=http://enotai.ru:3211   # Для CORS!
+ASTERISK_HOST=127.0.0.1               # Asterisk на том же сервере
+ASTERISK_AMI_PASSWORD=<secret>
+```
+
+> **ВАЖНО:** `DASHBOARD_URL` должен совпадать с URL, через который пользователи открывают дашборд. Иначе CORS заблокирует запросы.
+
+---
+
+## 8. Что дальше
 
 Аудиопоток из Asterisk передаётся через AudioSocket -> STT -> транскрипт -> дашборд.
 
@@ -161,3 +271,45 @@ trap "kill $BG_PID" EXIT
 1. Подключить SIP-транк (Mango Office) к Asterisk
 2. Добавить AMI Originate для автоматического запуска AudioSocket при BridgeEnter
 3. Реализовать подсказки ИИ на основе транскрипта + классификаторов SpeechKit
+
+---
+
+## 9. Выученные уроки (Lessons Learned)
+
+Практические уроки, извлечённые при разработке и деплое. Помогут избежать повторных ошибок.
+
+### 9.1. Deploy: всегда проверяй, что ВСЕ файлы существуют
+
+**Проблема:** GitHub Actions ссылался на `/opt/salescopilot/deploy.sh`, но файл не был создан -- ни в репозитории, ни на сервере. Результат: `exit code 127` ("command not found").
+
+**Урок:** Перед первым деплоем проверь: все ли скрипты, конфиги, директории (`venv/`, `node_modules/`) реально существуют на сервере. CI/CD не создаст их сам.
+
+### 9.2. Типы возврата: `bool` != `dict`
+
+**Проблема:** Эндпоинт `/api/check-keys` делал `**stt_status`, но `stt.check_connection()` возвращал `bool`, а не `dict`. Результат: 500 Internal Server Error.
+
+**Урок:** Всегда проверяй тип возвращаемого значения при использовании spread-оператора (`**`). Если методы одинаково называются (`check_connection`), это не значит, что они возвращают одинаковый тип.
+
+### 9.3. .env.example должен быть полным
+
+**Проблема:** `config.py` поддерживал `ASTERISK_AMI_PASSWORD`, `AUDIOSOCKET_PORT`, но `.env.example` их не содержал. Новый разработчик не узнает об этих переменных.
+
+**Урок:** При добавлении нового поля в `Settings` (Pydantic) -- сразу добавляй его в `.env.example` с описанием.
+
+### 9.4. CORS: production URL должен быть в allowed_origins
+
+**Проблема:** `allowed_origins` содержал только `localhost:5173`. На продакшене запросы с `http://enotai.ru:3211` блокировались CORS.
+
+**Урок:** Переменная `DASHBOARD_URL` должна быть обязательно задана в production `.env`. Проверяй CORS при первом деплое через DevTools -> Network -> заголовок `Access-Control-Allow-Origin`.
+
+### 9.5. Документация устаревает при рефакторинге
+
+**Проблема:** После рефакторинга в FSD-структуру (`src/app/App.tsx`, `src/shared/`, `src/pages/`) документация ссылалась на старые пути (`src/App.tsx`, `src/hooks/`, `src/types.ts`).
+
+**Урок:** При рефакторинге структуры -- сразу обновлять `system_guide.md`, `agents.md` и README. Иначе документация вводит в заблуждение.
+
+### 9.6. Verify-шаг не должен падать на второстепенных проверках
+
+**Проблема:** Шаг verify в GitHub Actions проверял `cat version.json`, но файл мог не существовать на первом деплое.
+
+**Урок:** Критические проверки (сервис работает, health check отвечает) -- с `|| exit 1`. Информационные проверки (версия, метрики) -- с `|| echo "not found"` (не ломать деплой).

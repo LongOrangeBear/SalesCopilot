@@ -117,7 +117,9 @@
 |---|---|---|
 | VPS (FastVPS) | [x] Есть | Asterisk + Backend |
 | Asterisk | [x] Установлен | Телефонный прокси |
+| GitHub (CI/CD) | [x] Настроен | Деплой через GitHub Actions |
+| Yandex Cloud (SpeechKit) | [x] Есть | Распознавание речи |
+| OpenAI | [x] Есть | ИИ-подсказки |
 | SIP-провайдер (Mango Office) | [ ] Нужен | Номер + SIP-транк |
 | Bitrix24 (тестовый портал) | [ ] Нужен | CRM + API |
-| Yandex Cloud (SpeechKit) | [ ] Нужен | Распознавание речи |
-| OpenAI или YandexGPT | [ ] Нужен | ИИ-подсказки |
+
